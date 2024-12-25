@@ -1,0 +1,215 @@
+import org.openqa.selenium.By;
+import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.WebElement;
+import org.openqa.selenium.chrome.ChromeDriver;
+import org.openqa.selenium.remote.RemoteWebDriver;
+import org.openqa.selenium.remote.DesiredCapabilities;
+
+import java.io.*;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+public class SeleniumBrowserStack {
+
+    private static final String BASE_URL = "https://elpais.com";
+    private static final String OPINION_SECTION = "https://elpais.com/opinion/";
+    private static final String DOWNLOAD_DIR = "./images";
+    private static final String BROWSERSTACK_USERNAME = "<your_browserstack_username>";
+    private static final String BROWSERSTACK_ACCESS_KEY = "<your_browserstack_access_key>";
+
+    public static void main(String[] args) throws Exception {
+        // Local Testing
+        System.setProperty("webdriver.chrome.driver", "<path_to_chromedriver>");
+        WebDriver driver = new ChromeDriver();
+
+        try {
+            List<Map<String, String>> articles = scrapeOpinionSection(driver);
+
+            List<String> titles = new ArrayList<>();
+            for (Map<String, String> article : articles) {
+                titles.add(article.get("title"));
+            }
+
+            System.out.println("Original Titles: " + titles);
+
+            List<String> translatedTitles = translateTitles(titles);
+            System.out.println("Translated Titles: " + translatedTitles);
+
+            Map<String, Integer> repeatedWords = analyzeHeaders(translatedTitles);
+            System.out.println("Repeated Words: " + repeatedWords);
+        } finally {
+            driver.quit();
+        }
+
+        // Cross-Browser Testing on BrowserStack
+        ExecutorService executor = Executors.newFixedThreadPool(5);
+        List<DesiredCapabilities> capabilitiesList = getBrowserStackCapabilities();
+
+        for (DesiredCapabilities capabilities : capabilitiesList) {
+            executor.submit(() -> runOnBrowserStack(capabilities));
+        }
+        executor.shutdown();
+    }
+
+    public static List<Map<String, String>> scrapeOpinionSection(WebDriver driver) throws Exception {
+        driver.get(OPINION_SECTION);
+        Thread.sleep(5000);
+
+        List<WebElement> articles = driver.findElements(By.cssSelector("article"));
+        List<Map<String, String>> results = new ArrayList<>();
+
+        for (int i = 0; i < Math.min(5, articles.size()); i++) {
+            WebElement article = articles.get(i);
+            WebElement titleElement = article.findElement(By.cssSelector("h2"));
+            String title = titleElement.getText();
+
+            WebElement linkElement = article.findElement(By.cssSelector("a"));
+            String link = linkElement.getAttribute("href");
+            driver.get(link);
+            Thread.sleep(3000);
+
+            List<WebElement> contentElements = driver.findElements(By.cssSelector("p"));
+            StringBuilder content = new StringBuilder();
+            for (WebElement elem : contentElements) {
+                content.append(elem.getText()).append(" ");
+            }
+
+            String imageFilename = null;
+            try {
+                WebElement imageElement = driver.findElement(By.cssSelector("img"));
+                String imageUrl = imageElement.getAttribute("src");
+                imageFilename = title.substring(0, 10).replaceAll(" ", "_") + ".jpg";
+                saveImage(imageUrl, imageFilename);
+            } catch (Exception ignored) {
+            }
+
+            Map<String, String> articleData = new HashMap<>();
+            articleData.put("title", title);
+            articleData.put("content", content.toString());
+            articleData.put("image", imageFilename);
+
+            results.add(articleData);
+            driver.navigate().back();
+            Thread.sleep(3000);
+        }
+
+        return results;
+    }
+
+    public static void saveImage(String imageUrl, String filename) throws IOException {
+        File dir = new File(DOWNLOAD_DIR);
+        if (!dir.exists()) dir.mkdirs();
+
+        URL url = new URL(imageUrl);
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setRequestMethod("GET");
+
+        try (InputStream in = connection.getInputStream();
+             FileOutputStream out = new FileOutputStream(new File(dir, filename))) {
+            byte[] buffer = new byte[1024];
+            int bytesRead;
+            while ((bytesRead = in.read(buffer)) != -1) {
+                out.write(buffer, 0, bytesRead);
+            }
+        }
+    }
+
+    public static List<String> translateTitles(List<String> titles) throws Exception {
+        List<String> translations = new ArrayList<>();
+        for (String title : titles) {
+            translations.add(translateText(title));
+        }
+        return translations;
+    }
+
+    public static String translateText(String text) throws Exception {
+        String apiUrl = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=es&tl=en&dt=t&q=" +
+                java.net.URLEncoder.encode(text, "UTF-8");
+        HttpURLConnection connection = (HttpURLConnection) new URL(apiUrl).openConnection();
+        connection.setRequestMethod("GET");
+
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(connection.getInputStream()))) {
+            String response = in.readLine();
+            return response.split(",")[0].replaceAll("[\[\]"]", "");
+        }
+    }
+
+    public static Map<String, Integer> analyzeHeaders(List<String> headers) {
+        Map<String, Integer> wordCount = new HashMap<>();
+
+        for (String header : headers) {
+            String[] words = header.toLowerCase().replaceAll("[.,]", "").split(" ");
+            for (String word : words) {
+                wordCount.put(word, wordCount.getOrDefault(word, 0) + 1);
+            }
+        }
+
+        Map<String, Integer> repeatedWords = new HashMap<>();
+        for (Map.Entry<String, Integer> entry : wordCount.entrySet()) {
+            if (entry.getValue() > 2) {
+                repeatedWords.put(entry.getKey(), entry.getValue());
+            }
+        }
+
+        return repeatedWords;
+    }
+
+    public static List<DesiredCapabilities> getBrowserStackCapabilities() {
+        List<DesiredCapabilities> capabilitiesList = new ArrayList<>();
+
+        DesiredCapabilities chrome = new DesiredCapabilities();
+        chrome.setCapability("browser", "Chrome");
+        chrome.setCapability("browser_version", "latest");
+        chrome.setCapability("os", "Windows");
+        chrome.setCapability("os_version", "10");
+        capabilitiesList.add(chrome);
+
+        DesiredCapabilities firefox = new DesiredCapabilities();
+        firefox.setCapability("browser", "Firefox");
+        firefox.setCapability("browser_version", "latest");
+        firefox.setCapability("os", "Windows");
+        firefox.setCapability("os_version", "10");
+        capabilitiesList.add(firefox);
+
+        DesiredCapabilities safari = new DesiredCapabilities();
+        safari.setCapability("browser", "Safari");
+        safari.setCapability("browser_version", "latest");
+        safari.setCapability("os", "OS X");
+        safari.setCapability("os_version", "Monterey");
+        capabilitiesList.add(safari);
+
+        DesiredCapabilities edge = new DesiredCapabilities();
+        edge.setCapability("browser", "Edge");
+        edge.setCapability("browser_version", "latest");
+        edge.setCapability("os", "Windows");
+        edge.setCapability("os_version", "11");
+        capabilitiesList.add(edge);
+
+        DesiredCapabilities iphone = new DesiredCapabilities();
+        iphone.setCapability("device", "iPhone 14");
+        iphone.setCapability("real_mobile", "true");
+        iphone.setCapability("os_version", "16");
+        capabilitiesList.add(iphone);
+
+        return capabilitiesList;
+    }
+
+    public static void runOnBrowserStack(DesiredCapabilities capabilities) {
+        String browserStackUrl = "https://" + BROWSERSTACK_USERNAME + ":" + BROWSERSTACK_ACCESS_KEY + "@hub-cloud.browserstack.com/wd/hub";
+        WebDriver driver = null;
+
+        try {
+            driver = new RemoteWebDriver(new URL(browserStackUrl), capabilities);
+            scrapeOpinionSection(driver);
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            if (driver != null) driver.quit();
+        }
+    }
+}
+
+     
